@@ -1,0 +1,56 @@
+
+import pandas as pd
+import numpy as np
+
+filename = "C:/Users/Sneha/Downloads/feeds[1].csv"
+timestamp_col = 0     
+voltage_col = 2       
+smooth_window = 10          
+slope_threshold = 2e-4       
+min_duration_s = 300        
+min_voltage_change = 0.05   
+min_voltage_diff_noise = 0.01 
+df = pd.read_csv(filename, header=None)
+df = df[[timestamp_col, voltage_col]]
+df.columns = ["timestamp", "voltage"]
+
+df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+df["voltage"] = pd.to_numeric(df["voltage"], errors="coerce")
+df = df.dropna().reset_index(drop=True)
+
+df["t_s"] = (df["timestamp"] - df["timestamp"].iloc[0]).dt.total_seconds()
+df["v_smooth"] = df["voltage"].rolling(smooth_window, center=True, min_periods=1).mean()
+
+df["v_filtered"] = df["v_smooth"].where(df["v_smooth"].diff().abs() > min_voltage_diff_noise, np.nan)
+df["v_filtered"] = df["v_filtered"].interpolate().bfill().ffill()
+
+dt = df["t_s"].diff().replace(0, 1e-6)
+df["slope"] = df["v_filtered"].diff() / dt
+df["is_charging"] = df["slope"] > slope_threshold
+df["is_discharging"] = df["slope"] < -slope_threshold
+def extract_segments(df, condition_col, label):
+    df["group"] = (df[condition_col] != df[condition_col].shift()).cumsum()
+    segments = []
+    for _, grp in df.groupby("group"):
+        if not grp[condition_col].iloc[0]:
+            continue
+        start, end = grp.iloc[0], grp.iloc[-1]
+        duration = end["t_s"] - start["t_s"]
+        v_change = end["v_filtered"] - start["v_filtered"]
+        if duration >= min_duration_s and abs(v_change) >= min_voltage_change:
+            segments.append({
+                "Type": label,
+                "Start Time": start["timestamp"],
+                "End Time": end["timestamp"],
+                "Duration (s)": round(duration, 1),
+                "ΔV (V)": round(v_change, 4)
+            })
+    return segments
+charge_cycles = extract_segments(df.copy(), "is_charging", "Charge")
+discharge_cycles = extract_segments(df.copy(), "is_discharging", "Discharge")
+print(f"Total Charge Cycles Detected    : {len(charge_cycles)}")
+print(f"Total Discharge Cycles Detected : {len(discharge_cycles)}")
+C:\Users\Sneha\AppData\Local\Temp\ipykernel_24372\2598879306.py:17: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+Total Charge Cycles Detected    : 101
+Total Discharge Cycles Detected : 274
